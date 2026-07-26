@@ -13,7 +13,7 @@ app = Flask(__name__)
 CREDIT = "@BRONX_ULTRA"
 
 # ============================================
-# 3 CONFIGURATIONS - AUTO ROTATION
+# 3 CONFIGURATIONS
 # ============================================
 CONFIGURATIONS = [
     {
@@ -25,7 +25,8 @@ CONFIGURATIONS = [
         "client": None,
         "flood_until": None,
         "request_count": 0,
-        "is_active": True
+        "is_active": True,
+        "initialized": False
     },
     {
         "id": 2,
@@ -36,102 +37,134 @@ CONFIGURATIONS = [
         "client": None,
         "flood_until": None,
         "request_count": 0,
-        "is_active": True
+        "is_active": True,
+        "initialized": False
     },
     {
         "id": 3,
         "api_id": int(os.environ.get('API_ID_3', '21230129')),
         "api_hash": os.environ.get('API_HASH_3', 'a88b2ec836c8a4038b24239fc14ecc80'),
-        "session_string": os.environ.get('SESSION_STRING_3', '1BVtsOJUBu1E865LhfELHIcTtFVIbjxnThR30ucfISUkZSPuh3TQ13QOQhgAEFvvjRJX9WNjAekQ8elVvnDEoytf0jeRnWs0BwCMYVAxQS-TWhaXWwfjXSFlZtgbHvlh3GggbEhpALQ2nVTvVd4YmUZWInXHaidYsW1g2IW0IxHGsA3zDEv0gltlOIMqiuqdIQANsSTpYoM8z5leBMg4_qnqb253WJXp7IpfXtkVO3eBEsWa-ON7BxvPlGELvKqR6jNZEDCYFi85W6NFH_L_T29cVJRmEcjvpTgOOJHMzzMdw8XtQj-v-S4a43zSOM3Ka3VeNexWU4ZM0Lu10RybVvi9DUXLy3Yo='),
+        "session_string": os.environ.get("1BVtsOJUBu1E865LhfELHIcTtFVIbjxnThR30ucfISUkZSPuh3TQ13QOQhgAEFvvjRJX9WNjAekQ8elVvnDEoytf0jeRnWs0BwCMYVAxQS-TWhaXWwfjXSFlZtgbHvlh3GggbEhpALQ2nVTvVd4YmUZWInXHaidYsW1g2IW0IxHGsA3zDEv0gltlOIMqiuqdIQANsSTpYoM8z5leBMg4_qnqb253WJXp7IpfXtkVO3eBEsWa-ON7BxvPlGELvKqR6jNZEDCYFi85W6NFH_L_T29cVJRmEcjvpTgOOJHMzzMdw8XtQj-v-S4a43zSOM3Ka3VeNexWU4ZM0Lu10RybVvi9DUXLy3Yo=', ''),
         "name": "Backup",
         "client": None,
         "flood_until": None,
         "request_count": 0,
-        "is_active": True
+        "is_active": True,
+        "initialized": False
     }
 ]
 
-# Active config index
 current_config_index = 0
 config_lock = threading.Lock()
-
-# Cache
 cache = {}
-CACHE_TTL = 86400  # 24 hours
+CACHE_TTL = 86400
 
-# Create event loop
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
-# ============================================
-# CONFIGURATION MANAGER
-# ============================================
-def get_active_config():
-    """Get currently active configuration"""
-    global current_config_index
-    
-    with config_lock:
-        # Try current config first
-        config = CONFIGURATIONS[current_config_index]
-        
-        # Check if current config is in flood wait
-        if config['flood_until'] and datetime.now() < config['flood_until']:
-            # Current config is rate limited, rotate to next
-            rotated = False
-            for i in range(3):
-                current_config_index = (current_config_index + 1) % 3
-                new_config = CONFIGURATIONS[current_config_index]
-                
-                if new_config['flood_until'] is None or datetime.now() >= new_config['flood_until']:
-                    config = new_config
-                    rotated = True
-                    break
-            
-            if not rotated:
-                # All configs are rate limited
-                min_wait = min([c['flood_until'] for c in CONFIGURATIONS if c['flood_until']])
-                wait_seconds = (min_wait - datetime.now()).seconds if min_wait else 60
-                return None, f"⏰ All accounts rate limited! Wait {wait_seconds} seconds."
-        
-        return config, None
 
-def set_config_flood(config, seconds):
-    """Mark config as rate limited"""
-    config['flood_until'] = datetime.now() + timedelta(seconds=seconds + 5)
-    config['is_active'] = False
-    
-    # Schedule reactivation
-    def reactivate():
-        time.sleep(seconds + 5)
-        config['is_active'] = True
-        config['flood_until'] = None
-    
-    threading.Thread(target=reactivate, daemon=True).start()
-
-def initialize_config(config):
-    """Initialize a single configuration"""
+# ============================================
+# INITIALIZE SINGLE CLIENT
+# ============================================
+async def init_single_client(config):
+    """Initialize one client with proper error handling"""
     try:
+        if not config['api_id'] or not config['api_hash'] or not config['session_string']:
+            print(f"⚠️ Config {config['id']} ({config['name']}): Missing credentials!")
+            return False
+        
         client = TelegramClient(
             StringSession(config['session_string']),
             config['api_id'],
             config['api_hash'],
-            loop=loop
+            loop=loop,
+            connection_retries=3,
+            retry_delay=1
         )
-        config['client'] = client
-        return True
+        
+        await client.connect()
+        
+        if await client.is_user_authorized():
+            config['client'] = client
+            config['initialized'] = True
+            print(f"✅ Config {config['id']} ({config['name']}): Ready!")
+            return True
+        else:
+            print(f"❌ Config {config['id']} ({config['name']}): Session expired! Regenerate string.")
+            await client.disconnect()
+            return False
+            
     except Exception as e:
-        print(f"❌ Config {config['id']} init failed: {e}")
+        print(f"❌ Config {config['id']} ({config['name']}): Init failed - {str(e)[:100]}")
         return False
 
-async def get_entity_with_config(config, username):
-    """Get entity using specific config with retry"""
-    clean = username.replace("@", "")
+
+# ============================================
+# GET ACTIVE CONFIG
+# ============================================
+def get_active_config():
+    """Get working configuration"""
+    global current_config_index
+    
+    with config_lock:
+        # Try current first
+        for i in range(3):
+            idx = (current_config_index + i) % 3
+            config = CONFIGURATIONS[idx]
+            
+            # Check if initialized and not flooded
+            if config['initialized'] and config['client']:
+                if config['flood_until'] and datetime.now() < config['flood_until']:
+                    continue  # Skip flooded config
+                
+                current_config_index = idx
+                return config, None
+        
+        # No config available
+        return None, "No active configuration available. Check credentials or wait for flood limit."
+
+
+def set_config_flood(config, seconds):
+    """Mark config as rate limited"""
+    config['flood_until'] = datetime.now() + timedelta(seconds=seconds + 5)
+    print(f"⏰ Config {config['id']} ({config['name']}): Flood wait {seconds}s")
+    
+    def reactivate():
+        time.sleep(seconds + 5)
+        config['flood_until'] = None
+        print(f"✅ Config {config['id']} ({config['name']}): Reactivated!")
+    
+    threading.Thread(target=reactivate, daemon=True).start()
+
+
+# ============================================
+# CACHE
+# ============================================
+def get_cached(username):
+    if username in cache:
+        result, timestamp = cache[username]
+        if datetime.now() - timestamp < timedelta(seconds=CACHE_TTL):
+            return result
+    return None
+
+def set_cached(username, result):
+    cache[username] = (result, datetime.now())
+
+
+# ============================================
+# TELEGRAM ENTITY FETCH
+# ============================================
+async def fetch_entity(config, username):
+    """Fetch entity with config"""
+    clean = username.replace("@", "").strip()
+    
+    if not config['client']:
+        raise Exception("Client not initialized")
     
     try:
-        await config['client'].connect()
-        
-        if not await config['client'].is_user_authorized():
-            raise Exception(f"Config {config['id']} not authorized")
+        # Ensure connected
+        if not config['client'].is_connected():
+            await config['client'].connect()
         
         entity = await config['client'].get_entity(f"@{clean}")
         config['request_count'] += 1
@@ -139,105 +172,112 @@ async def get_entity_with_config(config, username):
         
     except FloodWaitError as e:
         set_config_flood(config, e.seconds)
-        raise FloodWaitError(e.seconds)
+        raise Exception(f"Flood wait: {e.seconds}s. Auto-rotating...")
     except Exception as e:
-        raise e
+        raise Exception(f"Failed: {str(e)[:200]}")
 
-# ============================================
-# CACHE FUNCTIONS
-# ============================================
-def get_cached_result(username):
-    if username in cache:
-        result, timestamp = cache[username]
-        if datetime.now() - timestamp < timedelta(seconds=CACHE_TTL):
-            return result
-    return None
-
-def set_cached_result(username, result):
-    cache[username] = (result, datetime.now())
 
 # ============================================
 # FLASK ROUTES
 # ============================================
 @app.route('/')
 def home():
-    config_status = []
+    status_html = ""
     for c in CONFIGURATIONS:
-        status = "✅ Active" if c['is_active'] else f"⏰ Flood until {c['flood_until'].strftime('%H:%M:%S') if c['flood_until'] else 'Unknown'}"
-        config_status.append(f"Config {c['id']} ({c['name']}): {status} | Requests: {c['request_count']}")
-    
-    status_html = "<br>".join(config_status)
+        status = "✅ Ready" if c['initialized'] else "❌ Not Init"
+        if c['flood_until'] and datetime.now() < c['flood_until']:
+            status = f"⏰ Flood until {c['flood_until'].strftime('%H:%M:%S')}"
+        status_html += f"Config {c['id']} ({c['name']}): {status} | Reqs: {c['request_count']}<br>"
     
     return f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>BRONX ULTRA API - 3 CONFIGS</title>
+        <title>BRONX ULTRA API</title>
         <style>
             body {{ background: #000; color: #0ff; font-family: monospace; text-align: center; padding: 50px; }}
-            code {{ background: #111; padding: 10px; color: #fa0; border-radius: 5px; display: block; margin: 10px 0; }}
-            .status {{ background: #111; padding: 15px; border-radius: 10px; margin: 20px 0; text-align: left; color: #0f0; font-size: 12px; }}
-            .btn {{ background: #fa0; color: #000; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 5px; }}
+            .box {{ background: #111; padding: 20px; border-radius: 10px; margin: 20px auto; max-width: 600px; text-align: left; }}
+            code {{ background: #000; padding: 10px; color: #fa0; display: block; margin: 10px 0; border-radius: 5px; }}
+            .green {{ color: #0f0; }}
+            .red {{ color: #f00; }}
+            .yellow {{ color: #ff0; }}
+            input {{ width: 80%; padding: 12px; background: #222; border: 1px solid #0ff; color: #fff; border-radius: 5px; margin: 10px 0; }}
+            button {{ padding: 12px 30px; background: #0ff; color: #000; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }}
         </style>
     </head>
     <body>
         <h1>🆔 BRONX ULTRA API</h1>
-        <h2>⚡ 3 CONFIGURATIONS AUTO-ROTATE</h2>
+        <h3>3 CONFIGS AUTO-ROTATE</h3>
         
-        <div class="status">
-            <strong>📊 CONFIG STATUS:</strong><br>
-            {status_html}
+        <div class="box">
+            <strong>📊 Config Status:</strong><br>
+            <span class="green">{status_html}</span>
         </div>
         
-        <code>GET /chatid?username=USERNAME</code>
-        <code>GET /config-status</code>
-        <code>GET /clear-cache</code>
+        <input type="text" id="username" placeholder="Enter Telegram username...">
+        <button onclick="lookup()">🔍 GET CHAT ID</button>
         
-        <p style="color:#555; margin-top:30px;">{CREDIT}</p>
-        <p style="color:#0f0;">🔥 AUTO-ROTATE | 3 CONFIGS | 24H CACHE</p>
+        <div class="box" id="result" style="display:none;">
+            <pre id="resultData" style="color:#0f0;"></pre>
+        </div>
+        
+        <p style="color:#555; margin-top:20px;">{CREDIT}</p>
+        <p style="color:#0f0;">🔥 3 CONFIGS | AUTO-ROTATE | 24H CACHE</p>
+        
+        <script>
+        async function lookup() {{
+            var u = document.getElementById('username').value.trim();
+            if (!u) return alert('Enter username!');
+            var d = document.getElementById('result');
+            var p = document.getElementById('resultData');
+            d.style.display = 'block';
+            p.style.color = '#ff0';
+            p.textContent = '🔍 Fetching...';
+            try {{
+                var r = await fetch('/chatid?username=' + encodeURIComponent(u));
+                var j = await r.json();
+                p.style.color = '#0f0';
+                p.textContent = JSON.stringify(j, null, 2);
+            }} catch(e) {{
+                p.style.color = '#f00';
+                p.textContent = 'Error: ' + e.message;
+            }}
+        }}
+        </script>
     </body>
     </html>
     """
+
 
 @app.route('/chatid')
 def chatid():
     username = request.args.get('username', '').strip()
     
     if not username:
-        return jsonify({
-            "status": "error",
-            "message": "Missing username",
-            "credit": CREDIT
-        }), 400
+        return jsonify({"status": "error", "message": "Username required", "credit": CREDIT}), 400
     
-    # Check cache first
-    cached_result = get_cached_result(username)
-    if cached_result:
-        cached_result['cache_hit'] = True
-        cached_result['credit'] = CREDIT
-        return jsonify(cached_result)
+    # Check cache
+    cached = get_cached(username)
+    if cached:
+        cached['cache'] = True
+        cached['credit'] = CREDIT
+        return jsonify(cached)
     
     # Get active config
-    config, error_msg = get_active_config()
+    config, error = get_active_config()
     if not config:
-        return jsonify({
-            "status": "error",
-            "message": error_msg,
-            "credit": CREDIT
-        }), 429
+        return jsonify({"status": "error", "message": error, "credit": CREDIT}), 503
     
-    async def get():
-        entity = await get_entity_with_config(config, username)
-        clean = username.replace("@", "")
+    try:
+        entity = loop.run_until_complete(fetch_entity(config, username))
         
+        clean = username.replace("@", "")
         result = {
             "status": "success",
             "chat_id": entity.id,
             "username": getattr(entity, 'username', clean),
             "config_used": f"Config {config['id']} ({config['name']})",
-            "config_request_count": config['request_count'],
-            "credit": CREDIT,
-            "by": CREDIT
+            "credit": CREDIT
         }
         
         if hasattr(entity, 'broadcast') and entity.broadcast:
@@ -250,154 +290,106 @@ def chatid():
             result["type"] = "user"
             result["first_name"] = getattr(entity, 'first_name', '')
             result["last_name"] = getattr(entity, 'last_name', '')
-            result["phone"] = getattr(entity, 'phone', None)
         
-        return result
-    
-    try:
-        result = loop.run_until_complete(get())
-        set_cached_result(username, result)
-        result['cache_hit'] = False
+        set_cached(username, result)
+        result['cache'] = False
         return jsonify(result)
         
-    except FloodWaitError as e:
-        # Try next config automatically
-        config, _ = get_active_config()
-        if config:
-            try:
-                result = loop.run_until_complete(get())
-                set_cached_result(username, result)
-                result['cache_hit'] = False
-                result['auto_rotated'] = True
-                return jsonify(result)
-            except FloodWaitError as e2:
-                return jsonify({
-                    "status": "error",
-                    "message": f"All configs rate limited. Max wait: {e2.seconds}s",
-                    "credit": CREDIT
-                }), 429
-            except Exception as e2:
-                return jsonify({
-                    "status": "error",
-                    "message": str(e2),
-                    "credit": CREDIT
-                }), 404
-        
-        return jsonify({
-            "status": "error",
-            "message": f"Rate limited: {e.seconds} seconds. Auto-rotating to next config...",
-            "credit": CREDIT
-        }), 429
-        
     except Exception as e:
+        error_msg = str(e)
+        
+        # Try rotating to next config
+        if "Flood wait" in error_msg or "Failed" in error_msg:
+            config, _ = get_active_config()
+            if config:
+                try:
+                    entity = loop.run_until_complete(fetch_entity(config, username))
+                    clean = username.replace("@", "")
+                    result = {
+                        "status": "success",
+                        "chat_id": entity.id,
+                        "username": getattr(entity, 'username', clean),
+                        "config_used": f"Config {config['id']} ({config['name']}) [ROTATED]",
+                        "credit": CREDIT
+                    }
+                    
+                    if hasattr(entity, 'title'):
+                        result["title"] = entity.title
+                    else:
+                        result["first_name"] = getattr(entity, 'first_name', '')
+                    
+                    set_cached(username, result)
+                    result['cache'] = False
+                    result['rotated'] = True
+                    return jsonify(result)
+                    
+                except Exception as e2:
+                    error_msg = str(e2)
+        
         return jsonify({
             "status": "error",
-            "message": str(e),
+            "message": error_msg[:300],
             "credit": CREDIT
         }), 404
 
+
 @app.route('/config-status')
 def config_status():
-    """View all config statuses"""
-    status_list = []
+    status = []
     for c in CONFIGURATIONS:
-        status_list.append({
-            "config_id": c['id'],
+        status.append({
+            "id": c['id'],
             "name": c['name'],
-            "is_active": c['is_active'],
-            "flood_until": c['flood_until'].strftime('%Y-%m-%d %H:%M:%S') if c['flood_until'] else None,
-            "request_count": c['request_count'],
-            "api_id": str(c['api_id'])[:4] + "****"  # Hide full API ID
+            "initialized": c['initialized'],
+            "active": c['is_active'],
+            "flood_until": c['flood_until'].strftime('%H:%M:%S') if c['flood_until'] else None,
+            "requests": c['request_count']
         })
     
     return jsonify({
-        "status": "success",
-        "active_config": CONFIGURATIONS[current_config_index]['name'],
-        "configs": status_list,
+        "configs": status,
+        "active_index": current_config_index,
+        "active_name": CONFIGURATIONS[current_config_index]['name'],
         "credit": CREDIT
     })
 
-@app.route('/clear-cache')
-def clear_cache():
-    cache.clear()
-    return jsonify({
-        "status": "success",
-        "message": "Cache cleared",
-        "credit": CREDIT
-    })
-
-@app.route('/cache-stats')
-def cache_stats():
-    return jsonify({
-        "status": "success",
-        "cached_usernames": len(cache),
-        "cache_ttl_hours": CACHE_TTL // 3600,
-        "total_requests": sum([c['request_count'] for c in CONFIGURATIONS]),
-        "credit": CREDIT
-    })
 
 @app.route('/health')
 def health():
-    active_configs = sum([1 for c in CONFIGURATIONS if c['is_active']])
+    ready = sum([1 for c in CONFIGURATIONS if c['initialized']])
     return jsonify({
-        "status": "ok",
-        "active_configs": active_configs,
+        "status": "ok" if ready > 0 else "no_configs",
+        "ready_configs": ready,
         "total_configs": len(CONFIGURATIONS),
-        "cached_entries": len(cache),
+        "cache_size": len(cache),
         "credit": CREDIT
     })
 
-# ============================================
-# SWITCH CONFIG (Manual)
-# ============================================
-@app.route('/switch-config')
-def switch_config():
-    """Manually switch to next config"""
-    global current_config_index
-    with config_lock:
-        current_config_index = (current_config_index + 1) % 3
-    
-    return jsonify({
-        "status": "success",
-        "message": f"Switched to Config {CONFIGURATIONS[current_config_index]['id']} ({CONFIGURATIONS[current_config_index]['name']})",
-        "credit": CREDIT
-    })
 
 # ============================================
 # MAIN
 # ============================================
 if __name__ == "__main__":
-    # Initialize all configs
-    async def init():
-        for config in CONFIGURATIONS:
-            try:
-                client = TelegramClient(
-                    StringSession(config['session_string']),
-                    config['api_id'],
-                    config['api_hash'],
-                    loop=loop
-                )
-                await client.connect()
-                if await client.is_user_authorized():
-                    config['client'] = client
-                    print(f"✅ Config {config['id']} ({config['name']}) - Ready")
-                else:
-                    print(f"⚠️ Config {config['id']} ({config['name']}) - Not authorized!")
-            except Exception as e:
-                print(f"❌ Config {config['id']} ({config['name']}) - Error: {e}")
-    
-    try:
-        loop.run_until_complete(init())
-    except Exception as e:
-        print(f"Init error: {e}")
-    
-    print(f"""
+    print("""
     ╔══════════════════════════════════╗
-    ║   BRONX ULTRA API - 3 CONFIGS   ║
-    ║   AUTO-ROTATE ENABLED           ║
-    ║   CACHE: 24 HOURS               ║
+    ║   BRONX ULTRA API               ║
+    ║   3 CONFIGS AUTO-ROTATE         ║
     ╚══════════════════════════════════╝
     """)
+    
+    # Initialize all configs
+    async def init_all():
+        for config in CONFIGURATIONS:
+            success = await init_single_client(config)
+            if success:
+                print(f"✅ Config {config['id']} ({config['name']}) - READY")
+            else:
+                print(f"❌ Config {config['id']} ({config['name']}) - FAILED")
+    
+    loop.run_until_complete(init_all())
+    
+    ready = sum([1 for c in CONFIGURATIONS if c['initialized']])
+    print(f"\n📊 {ready}/3 Configurations Ready\n")
     
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
