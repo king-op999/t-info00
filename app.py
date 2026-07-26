@@ -6,175 +6,126 @@ import asyncio
 import os
 import time
 from datetime import datetime, timedelta
-import threading
 
 app = Flask(__name__)
-
 CREDIT = "@BRONX_ULTRA"
 
 # ============================================
-# 3 CONFIGURATIONS
+# 3 CONFIGURATIONS - ADD YOUR CREDENTIALS HERE
 # ============================================
-CONFIGURATIONS = [
+CONFIGS = [
     {
         "id": 1,
+        "name": "Primary",
         "api_id": int(os.environ.get('API_ID_1', '33396172')),
         "api_hash": os.environ.get('API_HASH_1', 'e62d3ab368bd474005cf88e9d59ffbf7'),
         "session_string": os.environ.get('SESSION_STRING_1', '1BVtsOJUBu0k25N9PeIroOvauUGz-jOaiAUZaZA0SZ4Njbiip4pPZhnw10n3w272e7nKg2I7QY_v3fzeOQ7Li3hbN_jil6BIdt7w7lkht5z5GfEnxe7h46Pst3ovOslkFEcjCo539GMX-4fU2rSKm6aRaDoaaAUiNZU5hedOCLc3q4IU6lc4VJ-wmy2QKuEYUcLlEK_ckrPf3NLFRN-_N0sEHP7yJd_qgPVpHAqM5EhltuEgOTN7TJ3LN_aXiNB4bnyW9Ci9uGQvd2ONoVKrpERGivE_mJKXEDSEYltdsjY3Tkc08QQzVQensVIt1_fE2H3jV4l7k1KSzKutx2UjiF9ryiCqunJQ='),
-        "name": "Primary",
-        "client": None,
         "flood_until": None,
         "request_count": 0,
-        "is_active": True,
-        "initialized": False
+        "client": None
     },
     {
         "id": 2,
+        "name": "Secondary",
         "api_id": int(os.environ.get('API_ID_2', '33754080')),
         "api_hash": os.environ.get('API_HASH_2', '7883fad751852a4bbe406710f8ea9726'),
         "session_string": os.environ.get('SESSION_STRING_2', '1BVtsOJUBu7MJTKUCHEMaembhiYci7fymaaripvYg88pv7IVjxGd2gDFs4LarqrfJjQVeVsy2oQ8KC78DQp565_7ugxzmVFACUm9t9e0UnqzjDG4_B0KjCFLAA6kzF65gA-47SW__-OvKHClC5rqRx_4YkE1BmSW6MKMVL7bVqSkVkvI3-UHQhM3PJ2TA0yGxUnOR3S8F_6K78a8DBeDPU0Gu2QiQbscqIOPO49-q0sp4ezbo-9uXtw2l0bXlXOiZWh-1GKHT4I7b7tLUJ4UWzABuGsSrWpqXSZ7FGxBKulOlROr857360o3Z27Hw457MwKYXIQJraDKy-OQiBvZv3OOWJhOsXTU='),
-        "name": "Secondary",
-        "client": None,
         "flood_until": None,
         "request_count": 0,
-        "is_active": True,
-        "initialized": False
+        "client": None
     },
     {
         "id": 3,
+        "name": "Backup",
         "api_id": int(os.environ.get('API_ID_3', '21230129')),
         "api_hash": os.environ.get('API_HASH_3', 'a88b2ec836c8a4038b24239fc14ecc80'),
-        "session_string": os.environ.get('SESSION_STRING_2', '1BVtsOJUBu1E865LhfELHIcTtFVIbjxnThR30ucfISUkZSPuh3TQ13QOQhgAEFvvjRJX9WNjAekQ8elVvnDEoytf0jeRnWs0BwCMYVAxQS-TWhaXWwfjXSFlZtgbHvlh3GggbEhpALQ2nVTvVd4YmUZWInXHaidYsW1g2IW0IxHGsA3zDEv0gltlOIMqiuqdIQANsSTpYoM8z5leBMg4_qnqb253WJXp7IpfXtkVO3eBEsWa-ON7BxvPlGELvKqR6jNZEDCYFi85W6NFH_L_T29cVJRmEcjvpTgOOJHMzzMdw8XtQj-v-S4a43zSOM3Ka3VeNexWU4ZM0Lu10RybVvi9DUXLy3Yo='),
-        "name": "Backup",
-        "client": None,
+        "session_string": os.environ.get('SESSION_STRING_3', '1BVtsOJUBu1E865LhfELHIcTtFVIbjxnThR30ucfISUkZSPuh3TQ13QOQhgAEFvvjRJX9WNjAekQ8elVvnDEoytf0jeRnWs0BwCMYVAxQS-TWhaXWwfjXSFlZtgbHvlh3GggbEhpALQ2nVTvVd4YmUZWInXHaidYsW1g2IW0IxHGsA3zDEv0gltlOIMqiuqdIQANsSTpYoM8z5leBMg4_qnqb253WJXp7IpfXtkVO3eBEsWa-ON7BxvPlGELvKqR6jNZEDCYFi85W6NFH_L_T29cVJRmEcjvpTgOOJHMzzMdw8XtQj-v-S4a43zSOM3Ka3VeNexWU4ZM0Lu10RybVvi9DUXLy3Yo='),
         "flood_until": None,
         "request_count": 0,
-        "is_active": True,
-        "initialized": False
+        "client": None
     }
 ]
 
-current_config_index = 0
-config_lock = threading.Lock()
+# Cache
 cache = {}
 CACHE_TTL = 86400
 
+# Event loop
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
+# Active config index
+active_config = 0
+
 
 # ============================================
-# INITIALIZE SINGLE CLIENT
+# GET WORKING CONFIG
 # ============================================
-async def init_single_client(config):
-    """Initialize one client with proper error handling"""
+def get_working_config():
+    """Get next working config that's not flooded"""
+    global active_config
+    
+    for i in range(3):
+        idx = (active_config + i) % 3
+        cfg = CONFIGS[idx]
+        
+        if cfg['client'] is None:
+            continue
+        
+        if cfg['flood_until'] and time.time() < cfg['flood_until']:
+            continue
+        
+        active_config = idx
+        return cfg
+    
+    return None
+
+
+# ============================================
+# TELEGRAM ENTITY FETCH
+# ============================================
+async def get_entity_with_config(cfg, username, retry_count=0):
+    """Get entity using specific config"""
+    clean = username.replace("@", "")
+    
     try:
-        if not config['api_id'] or not config['api_hash'] or not config['session_string']:
-            print(f"⚠️ Config {config['id']} ({config['name']}): Missing credentials!")
-            return False
+        await cfg['client'].connect()
         
-        client = TelegramClient(
-            StringSession(config['session_string']),
-            config['api_id'],
-            config['api_hash'],
-            loop=loop,
-            connection_retries=3,
-            retry_delay=1
-        )
+        if not await cfg['client'].is_user_authorized():
+            raise Exception(f"Config {cfg['id']} not authorized")
         
-        await client.connect()
+        entity = await cfg['client'].get_entity(f"@{clean}")
+        cfg['request_count'] += 1
+        return entity, cfg
         
-        if await client.is_user_authorized():
-            config['client'] = client
-            config['initialized'] = True
-            print(f"✅ Config {config['id']} ({config['name']}): Ready!")
-            return True
-        else:
-            print(f"❌ Config {config['id']} ({config['name']}): Session expired! Regenerate string.")
-            await client.disconnect()
-            return False
-            
+    except FloodWaitError as e:
+        cfg['flood_until'] = time.time() + e.seconds + 5
+        print(f"⏰ Config {cfg['id']} flood: {e.seconds}s")
+        
+        if retry_count < 2:
+            # Try next config
+            next_cfg = get_working_config()
+            if next_cfg and next_cfg['id'] != cfg['id']:
+                return await get_entity_with_config(next_cfg, username, retry_count + 1)
+        
+        raise Exception(f"All configs flooded! Wait {e.seconds}s")
+    
     except Exception as e:
-        print(f"❌ Config {config['id']} ({config['name']}): Init failed - {str(e)[:100]}")
-        return False
+        raise e
 
 
 # ============================================
-# GET ACTIVE CONFIG
+# CACHE FUNCTIONS
 # ============================================
-def get_active_config():
-    """Get working configuration"""
-    global current_config_index
-    
-    with config_lock:
-        # Try current first
-        for i in range(3):
-            idx = (current_config_index + i) % 3
-            config = CONFIGURATIONS[idx]
-            
-            # Check if initialized and not flooded
-            if config['initialized'] and config['client']:
-                if config['flood_until'] and datetime.now() < config['flood_until']:
-                    continue  # Skip flooded config
-                
-                current_config_index = idx
-                return config, None
-        
-        # No config available
-        return None, "No active configuration available. Check credentials or wait for flood limit."
-
-
-def set_config_flood(config, seconds):
-    """Mark config as rate limited"""
-    config['flood_until'] = datetime.now() + timedelta(seconds=seconds + 5)
-    print(f"⏰ Config {config['id']} ({config['name']}): Flood wait {seconds}s")
-    
-    def reactivate():
-        time.sleep(seconds + 5)
-        config['flood_until'] = None
-        print(f"✅ Config {config['id']} ({config['name']}): Reactivated!")
-    
-    threading.Thread(target=reactivate, daemon=True).start()
-
-
-# ============================================
-# CACHE
-# ============================================
-def get_cached(username):
+def get_cached_result(username):
     if username in cache:
         result, timestamp = cache[username]
         if datetime.now() - timestamp < timedelta(seconds=CACHE_TTL):
             return result
     return None
 
-def set_cached(username, result):
+def set_cached_result(username, result):
     cache[username] = (result, datetime.now())
-
-
-# ============================================
-# TELEGRAM ENTITY FETCH
-# ============================================
-async def fetch_entity(config, username):
-    """Fetch entity with config"""
-    clean = username.replace("@", "").strip()
-    
-    if not config['client']:
-        raise Exception("Client not initialized")
-    
-    try:
-        # Ensure connected
-        if not config['client'].is_connected():
-            await config['client'].connect()
-        
-        entity = await config['client'].get_entity(f"@{clean}")
-        config['request_count'] += 1
-        return entity
-        
-    except FloodWaitError as e:
-        set_config_flood(config, e.seconds)
-        raise Exception(f"Flood wait: {e.seconds}s. Auto-rotating...")
-    except Exception as e:
-        raise Exception(f"Failed: {str(e)[:200]}")
 
 
 # ============================================
@@ -182,12 +133,16 @@ async def fetch_entity(config, username):
 # ============================================
 @app.route('/')
 def home():
-    status_html = ""
-    for c in CONFIGURATIONS:
-        status = "✅ Ready" if c['initialized'] else "❌ Not Init"
-        if c['flood_until'] and datetime.now() < c['flood_until']:
-            status = f"⏰ Flood until {c['flood_until'].strftime('%H:%M:%S')}"
-        status_html += f"Config {c['id']} ({c['name']}): {status} | Reqs: {c['request_count']}<br>"
+    config_status = ""
+    for c in CONFIGS:
+        if c['client']:
+            status = "✅ Ready" 
+            if c['flood_until'] and time.time() < c['flood_until']:
+                wait = int(c['flood_until'] - time.time())
+                status = f"⏰ Flood {wait}s"
+        else:
+            status = "❌ Not Init"
+        config_status += f"Config {c['id']} ({c['name']}): {status} | Reqs: {c['request_count']}<br>"
     
     return f"""
     <!DOCTYPE html>
@@ -198,9 +153,6 @@ def home():
             body {{ background: #000; color: #0ff; font-family: monospace; text-align: center; padding: 50px; }}
             .box {{ background: #111; padding: 20px; border-radius: 10px; margin: 20px auto; max-width: 600px; text-align: left; }}
             code {{ background: #000; padding: 10px; color: #fa0; display: block; margin: 10px 0; border-radius: 5px; }}
-            .green {{ color: #0f0; }}
-            .red {{ color: #f00; }}
-            .yellow {{ color: #ff0; }}
             input {{ width: 80%; padding: 12px; background: #222; border: 1px solid #0ff; color: #fff; border-radius: 5px; margin: 10px 0; }}
             button {{ padding: 12px 30px; background: #0ff; color: #000; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }}
         </style>
@@ -211,10 +163,12 @@ def home():
         
         <div class="box">
             <strong>📊 Config Status:</strong><br>
-            <span class="green">{status_html}</span>
+            {config_status}
         </div>
         
-        <input type="text" id="username" placeholder="Enter Telegram username...">
+        <code>GET /chatid?username=USERNAME</code>
+        
+        <input type="text" id="username" placeholder="Enter username...">
         <button onclick="lookup()">🔍 GET CHAT ID</button>
         
         <div class="box" id="result" style="display:none;">
@@ -254,29 +208,33 @@ def chatid():
     username = request.args.get('username', '').strip()
     
     if not username:
-        return jsonify({"status": "error", "message": "Username required", "credit": CREDIT}), 400
+        return jsonify({"status": "error", "message": "Missing username", "credit": CREDIT}), 400
     
     # Check cache
-    cached = get_cached(username)
-    if cached:
-        cached['cache'] = True
-        cached['credit'] = CREDIT
-        return jsonify(cached)
+    cached_result = get_cached_result(username)
+    if cached_result:
+        cached_result['cache_hit'] = True
+        cached_result['credit'] = CREDIT
+        return jsonify(cached_result)
     
-    # Get active config
-    config, error = get_active_config()
-    if not config:
-        return jsonify({"status": "error", "message": error, "credit": CREDIT}), 503
+    # Get working config
+    cfg = get_working_config()
+    if not cfg:
+        return jsonify({
+            "status": "error",
+            "message": "No working config available! Check credentials.",
+            "credit": CREDIT
+        }), 503
     
     try:
-        entity = loop.run_until_complete(fetch_entity(config, username))
-        
+        entity, used_cfg = loop.run_until_complete(get_entity_with_config(cfg, username))
         clean = username.replace("@", "")
+        
         result = {
             "status": "success",
             "chat_id": entity.id,
             "username": getattr(entity, 'username', clean),
-            "config_used": f"Config {config['id']} ({config['name']})",
+            "config_used": f"Config {used_cfg['id']} ({used_cfg['name']})",
             "credit": CREDIT
         }
         
@@ -291,76 +249,42 @@ def chatid():
             result["first_name"] = getattr(entity, 'first_name', '')
             result["last_name"] = getattr(entity, 'last_name', '')
         
-        set_cached(username, result)
-        result['cache'] = False
+        set_cached_result(username, result)
+        result['cache_hit'] = False
         return jsonify(result)
         
     except Exception as e:
-        error_msg = str(e)
-        
-        # Try rotating to next config
-        if "Flood wait" in error_msg or "Failed" in error_msg:
-            config, _ = get_active_config()
-            if config:
-                try:
-                    entity = loop.run_until_complete(fetch_entity(config, username))
-                    clean = username.replace("@", "")
-                    result = {
-                        "status": "success",
-                        "chat_id": entity.id,
-                        "username": getattr(entity, 'username', clean),
-                        "config_used": f"Config {config['id']} ({config['name']}) [ROTATED]",
-                        "credit": CREDIT
-                    }
-                    
-                    if hasattr(entity, 'title'):
-                        result["title"] = entity.title
-                    else:
-                        result["first_name"] = getattr(entity, 'first_name', '')
-                    
-                    set_cached(username, result)
-                    result['cache'] = False
-                    result['rotated'] = True
-                    return jsonify(result)
-                    
-                except Exception as e2:
-                    error_msg = str(e2)
-        
         return jsonify({
             "status": "error",
-            "message": error_msg[:300],
+            "message": str(e)[:300],
             "credit": CREDIT
         }), 404
 
 
-@app.route('/config-status')
-def config_status():
-    status = []
-    for c in CONFIGURATIONS:
-        status.append({
-            "id": c['id'],
-            "name": c['name'],
-            "initialized": c['initialized'],
-            "active": c['is_active'],
-            "flood_until": c['flood_until'].strftime('%H:%M:%S') if c['flood_until'] else None,
-            "requests": c['request_count']
-        })
-    
+@app.route('/clear-cache')
+def clear_cache():
+    cache.clear()
+    return jsonify({"status": "success", "message": "Cache cleared", "credit": CREDIT})
+
+
+@app.route('/cache-stats')
+def cache_stats():
     return jsonify({
-        "configs": status,
-        "active_index": current_config_index,
-        "active_name": CONFIGURATIONS[current_config_index]['name'],
+        "status": "success",
+        "cached_usernames": len(cache),
+        "cache_ttl_hours": CACHE_TTL // 3600,
+        "total_requests": sum([c['request_count'] for c in CONFIGS]),
         "credit": CREDIT
     })
 
 
 @app.route('/health')
 def health():
-    ready = sum([1 for c in CONFIGURATIONS if c['initialized']])
+    ready = sum([1 for c in CONFIGS if c['client'] is not None])
     return jsonify({
         "status": "ok" if ready > 0 else "no_configs",
         "ready_configs": ready,
-        "total_configs": len(CONFIGURATIONS),
+        "total_configs": len(CONFIGS),
         "cache_size": len(cache),
         "credit": CREDIT
     })
@@ -370,25 +294,34 @@ def health():
 # MAIN
 # ============================================
 if __name__ == "__main__":
-    print("""
-    ╔══════════════════════════════════╗
-    ║   BRONX ULTRA API               ║
-    ║   3 CONFIGS AUTO-ROTATE         ║
-    ╚══════════════════════════════════╝
-    """)
+    async def init():
+        for cfg in CONFIGS:
+            try:
+                if not cfg['api_id'] or not cfg['api_hash'] or not cfg['session_string']:
+                    print(f"⚠️ Config {cfg['id']} ({cfg['name']}): No credentials!")
+                    continue
+                
+                client = TelegramClient(
+                    StringSession(cfg['session_string']),
+                    cfg['api_id'],
+                    cfg['api_hash'],
+                    loop=loop
+                )
+                await client.connect()
+                
+                if await client.is_user_authorized():
+                    cfg['client'] = client
+                    print(f"✅ Config {cfg['id']} ({cfg['name']}): Ready!")
+                else:
+                    print(f"❌ Config {cfg['id']} ({cfg['name']}): Session expired!")
+                    await client.disconnect()
+                    
+            except Exception as e:
+                print(f"❌ Config {cfg['id']} ({cfg['name']}): {str(e)[:100]}")
     
-    # Initialize all configs
-    async def init_all():
-        for config in CONFIGURATIONS:
-            success = await init_single_client(config)
-            if success:
-                print(f"✅ Config {config['id']} ({config['name']}) - READY")
-            else:
-                print(f"❌ Config {config['id']} ({config['name']}) - FAILED")
+    loop.run_until_complete(init())
     
-    loop.run_until_complete(init_all())
-    
-    ready = sum([1 for c in CONFIGURATIONS if c['initialized']])
+    ready = sum([1 for c in CONFIGS if c['client'] is not None])
     print(f"\n📊 {ready}/3 Configurations Ready\n")
     
     port = int(os.environ.get('PORT', 10000))
