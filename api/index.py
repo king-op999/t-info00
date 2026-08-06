@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 import requests
 import time
 from datetime import datetime, timedelta
-import os
 
 app = Flask(__name__)
 CREDIT = "@BRONX_ULTRA"
@@ -37,9 +36,8 @@ API_ENDPOINTS = [
     }
 ]
 
-# In-memory cache (Vercel serverless will reset on each cold start)
 cache = {}
-CACHE_TTL = 86400  # 24 hours
+CACHE_TTL = 86400
 
 # ============================================
 # CACHE FUNCTIONS
@@ -58,7 +56,6 @@ def set_cached(username, result):
 # FETCH FUNCTIONS
 # ============================================
 def fetch_from_api(api_config, username):
-    """Try to fetch from one API"""
     try:
         clean_username = username.replace("@", "").strip()
         url = f"{api_config['url']}?username={clean_username}"
@@ -87,23 +84,12 @@ def fetch_from_api(api_config, username):
         else:
             raise Exception(f"HTTP {response.status_code}")
             
-    except requests.exceptions.Timeout:
-        api_config['fail_count'] += 1
-        api_config['last_fail'] = datetime.now()
-        raise Exception(f"{api_config['name']} timeout")
-    
-    except requests.exceptions.ConnectionError:
-        api_config['fail_count'] += 1
-        api_config['last_fail'] = datetime.now()
-        raise Exception(f"{api_config['name']} connection failed")
-    
     except Exception as e:
         api_config['fail_count'] += 1
         api_config['last_fail'] = datetime.now()
         raise e
 
 def fetch_with_fallback(username):
-    """Try APIs one by one until success"""
     errors = []
     
     for api in API_ENDPOINTS:
@@ -265,12 +251,14 @@ def health():
     })
 
 # ============================================
-# FOR VERCEL SERVERLESS
+# FOR VERCEL
 # ============================================
-# Vercel requires this
+# This is required for Vercel serverless
 app = app
 
-# For local development
+# ============================================
+# LOCAL DEVELOPMENT
+# ============================================
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
