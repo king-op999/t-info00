@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import requests
 import time
 from datetime import datetime, timedelta
+import os
 
 app = Flask(__name__)
 CREDIT = "@BRONX_ULTRA"
@@ -36,10 +37,9 @@ API_ENDPOINTS = [
     }
 ]
 
-# Cache for fast responses
+# In-memory cache (Vercel serverless will reset on each cold start)
 cache = {}
 CACHE_TTL = 86400  # 24 hours
-
 
 # ============================================
 # CACHE FUNCTIONS
@@ -54,9 +54,8 @@ def get_cached(username):
 def set_cached(username, result):
     cache[username] = (result, datetime.now())
 
-
 # ============================================
-# FETCH FROM SINGLE API
+# FETCH FUNCTIONS
 # ============================================
 def fetch_from_api(api_config, username):
     """Try to fetch from one API"""
@@ -71,15 +70,12 @@ def fetch_from_api(api_config, username):
         if response.status_code == 200:
             data = response.json()
             
-            # Check if response has error
             if data.get('status') == 'error':
                 raise Exception(data.get('message', 'API returned error'))
             
-            # Success! Reset fail count
             api_config['fail_count'] = 0
             api_config['last_fail'] = None
             
-            # Add our credit and API info
             data['credit'] = CREDIT
             data['by'] = CREDIT
             data['api_used'] = api_config['name']
@@ -106,15 +102,10 @@ def fetch_from_api(api_config, username):
         api_config['last_fail'] = datetime.now()
         raise e
 
-
-# ============================================
-# FETCH WITH FALLBACK (Sequential - One by One)
-# ============================================
 def fetch_with_fallback(username):
     """Try APIs one by one until success"""
     errors = []
     
-    # Try each API sequentially
     for api in API_ENDPOINTS:
         try:
             print(f"🔄 Trying {api['name']}...")
@@ -125,11 +116,8 @@ def fetch_with_fallback(username):
             error_msg = str(e)
             errors.append(f"{api['name']}: {error_msg}")
             print(f"❌ {api['name']} FAILED: {error_msg}")
-            # Continue to next API
     
-    # All APIs failed
     raise Exception(f"All APIs failed! Errors: {' | '.join(errors)}")
-
 
 # ============================================
 # FLASK ROUTES
@@ -213,7 +201,6 @@ def home():
     </html>
     """
 
-
 @app.route('/chatid')
 def chatid():
     username = request.args.get('username', '').strip()
@@ -225,7 +212,6 @@ def chatid():
             "credit": CREDIT
         }), 400
     
-    # Check cache first
     cached = get_cached(username)
     if cached:
         cached['cache_hit'] = True
@@ -234,13 +220,9 @@ def chatid():
         return jsonify(cached)
     
     try:
-        # Try APIs one by one (fallback)
         result = fetch_with_fallback(username)
-        
-        # Cache the result
         set_cached(username, result)
         result['cache_hit'] = False
-        
         return jsonify(result)
         
     except Exception as e:
@@ -250,12 +232,10 @@ def chatid():
             "credit": CREDIT
         }), 503
 
-
 @app.route('/clear-cache')
 def clear_cache():
     cache.clear()
     return jsonify({"status": "success", "message": "Cache cleared", "credit": CREDIT})
-
 
 @app.route('/stats')
 def stats():
@@ -274,7 +254,6 @@ def stats():
         "credit": CREDIT
     })
 
-
 @app.route('/health')
 def health():
     working = sum([1 for api in API_ENDPOINTS if api['fail_count'] < 5])
@@ -285,19 +264,13 @@ def health():
         "credit": CREDIT
     })
 
+# ============================================
+# FOR VERCEL SERVERLESS
+# ============================================
+# Vercel requires this
+app = app
 
-# ============================================
-# MAIN
-# ============================================
+# For local development
 if __name__ == "__main__":
-    import os
-    print("""
-    ╔══════════════════════════════════╗
-    ║   BRONX ULTRA API               ║
-    ║   3 APIs FALLBACK SYSTEM        ║
-    ║   Sequential: 1 → 2 → 3        ║
-    ╚══════════════════════════════════╝
-    """)
-    
-    port = int(os.environ.get('PORT', 10000))
+    port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
