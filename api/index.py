@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 import requests
 import time
 from datetime import datetime, timedelta
-import os
 
 app = Flask(__name__)
 CREDIT = "@BRONX_ULTRA"
@@ -15,7 +14,7 @@ API_ENDPOINTS = [
         "id": 1,
         "name": "Primary",
         "url": "https://zero02-tg000.onrender.com/chatid",
-        "timeout": 15,
+        "timeout": 10,
         "fail_count": 0,
         "last_fail": None
     },
@@ -23,7 +22,7 @@ API_ENDPOINTS = [
         "id": 2,
         "name": "Secondary",
         "url": "https://test-ha-opop.onrender.com/chatid",
-        "timeout": 15,
+        "timeout": 10,
         "fail_count": 0,
         "last_fail": None
     },
@@ -31,15 +30,20 @@ API_ENDPOINTS = [
         "id": 3,
         "name": "Backup",
         "url": "https://tg-tedt-op01.onrender.com/chatid",
-        "timeout": 15,
+        "timeout": 10,
         "fail_count": 0,
         "last_fail": None
     }
 ]
 
+# Cache for fast responses
 cache = {}
-CACHE_TTL = 86400
+CACHE_TTL = 86400  # 24 hours
 
+
+# ============================================
+# CACHE FUNCTIONS
+# ============================================
 def get_cached(username):
     if username in cache:
         result, timestamp = cache[username]
@@ -50,7 +54,12 @@ def get_cached(username):
 def set_cached(username, result):
     cache[username] = (result, datetime.now())
 
+
+# ============================================
+# FETCH FROM SINGLE API
+# ============================================
 def fetch_from_api(api_config, username):
+    """Try to fetch from one API"""
     try:
         clean_username = username.replace("@", "").strip()
         url = f"{api_config['url']}?username={clean_username}"
@@ -62,12 +71,15 @@ def fetch_from_api(api_config, username):
         if response.status_code == 200:
             data = response.json()
             
+            # Check if response has error
             if data.get('status') == 'error':
                 raise Exception(data.get('message', 'API returned error'))
             
+            # Success! Reset fail count
             api_config['fail_count'] = 0
             api_config['last_fail'] = None
             
+            # Add our credit and API info
             data['credit'] = CREDIT
             data['by'] = CREDIT
             data['api_used'] = api_config['name']
@@ -79,27 +91,46 @@ def fetch_from_api(api_config, username):
         else:
             raise Exception(f"HTTP {response.status_code}")
             
+    except requests.exceptions.Timeout:
+        api_config['fail_count'] += 1
+        api_config['last_fail'] = datetime.now()
+        raise Exception(f"{api_config['name']} timeout")
+    
+    except requests.exceptions.ConnectionError:
+        api_config['fail_count'] += 1
+        api_config['last_fail'] = datetime.now()
+        raise Exception(f"{api_config['name']} connection failed")
+    
     except Exception as e:
         api_config['fail_count'] += 1
         api_config['last_fail'] = datetime.now()
         raise e
 
+
+# ============================================
+# FETCH WITH FALLBACK (Sequential - One by One)
+# ============================================
 def fetch_with_fallback(username):
+    """Try APIs one by one until success"""
     errors = []
     
+    # Try each API sequentially
     for api in API_ENDPOINTS:
         try:
-            print(f"🔄 Trying {api['name']}...")
             result = fetch_from_api(api, username)
-            print(f"✅ {api['name']} SUCCESS!")
             return result
         except Exception as e:
             error_msg = str(e)
             errors.append(f"{api['name']}: {error_msg}")
-            print(f"❌ {api['name']} FAILED: {error_msg}")
+            # Continue to next API
     
+    # All APIs failed
     raise Exception(f"All APIs failed! Errors: {' | '.join(errors)}")
 
+
+# ============================================
+# FLASK ROUTES
+# ============================================
 @app.route('/')
 def home():
     api_status = ""
@@ -121,10 +152,12 @@ def home():
     <html>
     <head>
         <title>BRONX ULTRA API</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-            body {{ background: #000; color: #0ff; font-family: monospace; text-align: center; padding: 50px; }}
+            body {{ background: #000; color: #0ff; font-family: monospace; text-align: center; padding: 20px; }}
             .box {{ background: #111; padding: 20px; border-radius: 10px; margin: 20px auto; max-width: 600px; text-align: left; }}
-            code {{ background: #000; padding: 10px; color: #fa0; display: block; margin: 10px 0; border-radius: 5px; }}
+            code {{ background: #000; padding: 10px; color: #fa0; display: block; margin: 10px 0; border-radius: 5px; word-break: break-all; }}
             input {{ width: 80%; padding: 12px; background: #222; border: 1px solid #0ff; color: #fff; border-radius: 5px; margin: 10px 0; }}
             button {{ padding: 12px 30px; background: #0ff; color: #000; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }}
             .green {{ color: #0f0; }}
@@ -143,13 +176,13 @@ def home():
             <small style="color:#888;">🔄 Sequential Fallback: API 1 → API 2 → API 3</small>
         </div>
         
-        <code>GET /chatid?username=USERNAME</code>
+        <code>GET /api/chatid?username=USERNAME</code>
         
-        <input type="text" id="username" placeholder="Enter username...">
+        <input type="text" id="username" placeholder="Enter username..." autocomplete="off">
         <button onclick="lookup()">🔍 GET CHAT ID</button>
         
         <div class="box" id="result" style="display:none;">
-            <pre id="resultData" style="color:#0f0;"></pre>
+            <pre id="resultData" style="color:#0f0; white-space: pre-wrap; word-break: break-all;"></pre>
         </div>
         
         <p style="color:#555; margin-top:20px;">{CREDIT}</p>
@@ -165,7 +198,7 @@ def home():
             p.style.color = '#ff0';
             p.textContent = '🔍 Trying APIs... Please wait...';
             try {{
-                var r = await fetch('/chatid?username=' + encodeURIComponent(u));
+                var r = await fetch('/api/chatid?username=' + encodeURIComponent(u));
                 var j = await r.json();
                 p.style.color = '#0f0';
                 p.textContent = JSON.stringify(j, null, 2);
@@ -179,7 +212,8 @@ def home():
     </html>
     """
 
-@app.route('/chatid')
+
+@app.route('/api/chatid')
 def chatid():
     username = request.args.get('username', '').strip()
     
@@ -190,6 +224,7 @@ def chatid():
             "credit": CREDIT
         }), 400
     
+    # Check cache first
     cached = get_cached(username)
     if cached:
         cached['cache_hit'] = True
@@ -198,9 +233,13 @@ def chatid():
         return jsonify(cached)
     
     try:
+        # Try APIs one by one (fallback)
         result = fetch_with_fallback(username)
+        
+        # Cache the result
         set_cached(username, result)
         result['cache_hit'] = False
+        
         return jsonify(result)
         
     except Exception as e:
@@ -210,12 +249,14 @@ def chatid():
             "credit": CREDIT
         }), 503
 
-@app.route('/clear-cache')
+
+@app.route('/api/clear-cache')
 def clear_cache():
     cache.clear()
     return jsonify({"status": "success", "message": "Cache cleared", "credit": CREDIT})
 
-@app.route('/stats')
+
+@app.route('/api/stats')
 def stats():
     api_stats = []
     for api in API_ENDPOINTS:
@@ -232,7 +273,8 @@ def stats():
         "credit": CREDIT
     })
 
-@app.route('/health')
+
+@app.route('/api/health')
 def health():
     working = sum([1 for api in API_ENDPOINTS if api['fail_count'] < 5])
     return jsonify({
@@ -242,15 +284,7 @@ def health():
         "credit": CREDIT
     })
 
-# ============================================
-# FOR VERCEL - This is critical!
-# ============================================
-# Vercel expects a WSGI application
-app = app
 
-# ============================================
-# LOCAL DEVELOPMENT
-# ============================================
-if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+# Vercel requires this handler
+def handler(event, context):
+    return app(event, context)
