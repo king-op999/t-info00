@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import requests
 import time
 from datetime import datetime, timedelta
+import os
 
 app = Flask(__name__)
 CREDIT = "@BRONX_ULTRA"
@@ -39,9 +40,6 @@ API_ENDPOINTS = [
 cache = {}
 CACHE_TTL = 86400
 
-# ============================================
-# CACHE FUNCTIONS
-# ============================================
 def get_cached(username):
     if username in cache:
         result, timestamp = cache[username]
@@ -52,9 +50,6 @@ def get_cached(username):
 def set_cached(username, result):
     cache[username] = (result, datetime.now())
 
-# ============================================
-# FETCH FUNCTIONS
-# ============================================
 def fetch_from_api(api_config, username):
     try:
         clean_username = username.replace("@", "").strip()
@@ -105,9 +100,6 @@ def fetch_with_fallback(username):
     
     raise Exception(f"All APIs failed! Errors: {' | '.join(errors)}")
 
-# ============================================
-# FLASK ROUTES
-# ============================================
 @app.route('/')
 def home():
     api_status = ""
@@ -251,9 +243,9 @@ def health():
     })
 
 # ============================================
-# FOR VERCEL
+# FOR VERCEL - This is critical!
 # ============================================
-# This is required for Vercel serverless
+# Vercel expects a WSGI application
 app = app
 
 # ============================================
