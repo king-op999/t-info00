@@ -13,7 +13,7 @@ API_ENDPOINTS = [
     {
         "id": 1,
         "name": "Primary",
-        "url": "https://zero02-tg000.onrender.com/chatid",
+        "url": "https://zero0-1tg.onrender.com/chatid",
         "timeout": 10,
         "fail_count": 0,
         "last_fail": None
